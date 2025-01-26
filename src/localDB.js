@@ -243,4 +243,5 @@ class LocalDB {
       });
     }
   }
-  
+
+module.exports = LocalDB;
