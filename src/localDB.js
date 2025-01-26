@@ -1,0 +1,246 @@
+/**
+ * Class for managing a local database using IndexedDB.
+ */
+class LocalDB {
+    /**
+     * Creates an instance of LocalDB.
+     * @param {string} databaseName - The name of the database.
+     * @param {number} [version=1] - The database version.
+     */
+    constructor(databaseName, version = 1) {
+      this.databaseName = databaseName;
+      this.version = version;
+      this.db = null;
+    }
+  
+    /**
+     * Opens a connection to the database and initializes the schema if needed.
+     * @param {function(IDBDatabase): void} schemaCallback - Callback to define the database schema.
+     * @returns {Promise<IDBDatabase>} Resolves to the database instance.
+     */
+    async connect(schemaCallback) {
+      return new Promise((resolve, reject) => {
+        const request = indexedDB.open(this.databaseName, this.version);
+  
+        request.onupgradeneeded = (event) => {
+          const db = event.target.result;
+          try {
+            schemaCallback(db);
+          } catch (error) {
+            reject(`Schema callback error: ${error.message}`);
+          }
+        };
+  
+        request.onsuccess = (event) => {
+          this.db = event.target.result;
+          resolve(this.db);
+        };
+  
+        request.onerror = (event) => reject(`Connection error: ${event.target.error}`);
+      });
+    }
+  
+    /**
+     * Inserts data into an object store.
+     * @param {string} table - The name of the object store.
+     * @param {Object} data - The data to insert.
+     * @returns {Promise<void>} Resolves when the operation is successful.
+     */
+    async insert(table, data) {
+      return new Promise((resolve, reject) => {
+        const transaction = this.db.transaction(table, "readwrite");
+        const store = transaction.objectStore(table);
+        const request = store.add(data);
+  
+        request.onsuccess = () => resolve();
+        request.onerror = (event) => reject(`Insert error: ${event.target.error}`);
+      });
+    }
+  
+    /**
+     * Retrieves all data from an object store that matches the filter callback.
+     * @param {string} table - The name of the object store.
+     * @param {function(Object): boolean} callback - Filter function.
+     * @returns {Promise<Object[]>} Resolves to an array of matching data.
+     */
+    async select(table, callback) {
+      return new Promise((resolve, reject) => {
+        const transaction = this.db.transaction(table, "readonly");
+        const store = transaction.objectStore(table);
+        const request = store.getAll();
+  
+        request.onsuccess = (event) => {
+          const results = event.target.result.filter(callback);
+          resolve(results);
+        };
+  
+        request.onerror = (event) => reject(`Select error: ${event.target.error}`);
+      });
+    }
+  
+    /**
+     * Updates data in an object store by key.
+     * @param {string} table - The name of the object store.
+     * @param {IDBValidKey} key - The key of the data to update.
+     * @param {Object} newData - The new data to replace the old data.
+     * @returns {Promise<void>} Resolves when the operation is successful.
+     */
+    async update(table, key, newData) {
+      return new Promise((resolve, reject) => {
+        const transaction = this.db.transaction(table, "readwrite");
+        const store = transaction.objectStore(table);
+        const request = store.get(key);
+  
+        request.onsuccess = (event) => {
+          const data = event.target.result;
+          if (data) {
+            Object.assign(data, newData);
+            const updateRequest = store.put(data);
+            updateRequest.onsuccess = () => resolve();
+            updateRequest.onerror = (event) => reject(`Update error: ${event.target.error}`);
+          } else {
+            reject("Data not found.");
+          }
+        };
+  
+        request.onerror = (event) => reject(`Fetch error during update: ${event.target.error}`);
+      });
+    }
+  
+    /**
+     * Deletes data from an object store by key.
+     * @param {string} table - The name of the object store.
+     * @param {IDBValidKey} key - The key of the data to delete.
+     * @returns {Promise<void>} Resolves when the operation is successful.
+     */
+    async delete(table, key) {
+      return new Promise((resolve, reject) => {
+        const transaction = this.db.transaction(table, "readwrite");
+        const store = transaction.objectStore(table);
+        const request = store.delete(key);
+  
+        request.onsuccess = () => resolve();
+        request.onerror = (event) => reject(`Delete error: ${event.target.error}`);
+      });
+    }
+  
+    /**
+     * Performs a query on an object store with filtering, sorting, and limiting options.
+     * @param {string} table - The name of the object store.
+     * @param {Object} [options={}] - Query options (where, orderBy, limit).
+     * @param {function(Object): boolean} [options.where] - Data filter function.
+     * @param {string} [options.orderBy] - Field for sorting ("ASC" or "DESC").
+     * @param {number} [options.limit] - Maximum number of data entries to retrieve.
+     * @returns {Promise<Object[]>} Resolves to the query results.
+     */
+    async query(table, options = {}) {
+      return new Promise((resolve, reject) => {
+        const transaction = this.db.transaction(table, "readonly");
+        const store = transaction.objectStore(table);
+        const request = store.getAll();
+  
+        request.onsuccess = (event) => {
+          let results = event.target.result;
+  
+          if (options.where) {
+            results = results.filter(options.where);
+          }
+  
+          if (options.orderBy) {
+            const [field, direction] = options.orderBy.split(" ");
+            results.sort((a, b) =>
+              direction === "DESC" ? b[field] - a[field] : a[field] - b[field]
+            );
+          }
+  
+          if (options.limit) {
+            results = results.slice(0, options.limit);
+          }
+  
+          resolve(results);
+        };
+  
+        request.onerror = (event) => reject(`Query error: ${event.target.error}`);
+      });
+    }
+  
+    /**
+     * Performs a join operation between two tables based on a specified condition.
+     * @param {string[]} tables - Array of table names to join (only 2 tables).
+     * @param {function(Object, Object): boolean} joinCondition - Join condition between the two tables.
+     * @param {function(Object, Object): Object} resultSelector - Function to map the join result.
+     * @returns {Promise<Object[]>} Resolves to an array of join results.
+     */
+    async join(tables, joinCondition, resultSelector) {
+      return new Promise(async (resolve, reject) => {
+        try {
+          const data = {};
+  
+          for (const table of tables) {
+            data[table] = await this.select(table, () => true);
+          }
+  
+          const results = [];
+          for (const rowA of data[tables[0]]) {
+            for (const rowB of data[tables[1]]) {
+              if (joinCondition(rowA, rowB)) {
+                results.push(resultSelector(rowA, rowB));
+              }
+            }
+          }
+  
+          resolve(results);
+        } catch (error) {
+          reject(`Unexpected error during join: ${error.message}`);
+        }
+      });
+    }
+  
+    /**
+     * Performs an aggregation operation on a table.
+     * @param {string} table - The table name.
+     * @param {"SUM"|"AVG"|"COUNT"|"MAX"|"MIN"} operation - The aggregation operation.
+     * @param {string} field - The field to calculate.
+     * @returns {Promise<number>} Resolves to the aggregation result.
+     */
+    async aggregate(table, operation, field) {
+      return new Promise((resolve, reject) => {
+        const transaction = this.db.transaction(table, "readonly");
+        const store = transaction.objectStore(table);
+        const request = store.getAll();
+  
+        request.onsuccess = (event) => {
+          const data = event.target.result;
+          let result;
+  
+          switch (operation) {
+            case "SUM":
+              result = data.reduce((sum, item) => sum + (item[field] || 0), 0);
+              break;
+            case "AVG":
+              result =
+                data.reduce((sum, item) => sum + (item[field] || 0), 0) /
+                data.length;
+              break;
+            case "COUNT":
+              result = data.length;
+              break;
+            case "MAX":
+              result = Math.max(...data.map((item) => item[field] || -Infinity));
+              break;
+            case "MIN":
+              result = Math.min(...data.map((item) => item[field] || Infinity));
+              break;
+            default:
+              reject("Invalid operation.");
+              return;
+          }
+  
+          resolve(result);
+        };
+  
+        request.onerror = (event) => reject(`Aggregate error: ${event.target.error}`);
+      });
+    }
+  }
+  
